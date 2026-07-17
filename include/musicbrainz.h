@@ -1,0 +1,40 @@
+#pragma once
+#include <stdint.h>
+
+#define MAX_TRACKS    99
+#define MAX_STR_LEN   128
+#define MAX_TRACK_LEN 64
+#define CACHE_SIZE    64
+
+/* 存储一张CD的三个核心字段 */
+typedef struct {
+    char     artist[MAX_STR_LEN];
+    char     album[MAX_STR_LEN];
+    char     tracks[MAX_TRACKS][MAX_TRACK_LEN];
+    uint8_t  track_count;
+    uint32_t discid;
+    uint8_t  valid;  /* 0=空槽 1=有效数据 */
+} CDInfo;
+
+/*
+ * 初始化缓存，清空所有槽位
+ * 在 main.c 的 prx_start 里调用一次
+ */
+void mb_cache_init(void);
+
+/*
+ * 查缓存，找到返回指针，未命中返回NULL
+ */
+CDInfo *mb_cache_get(uint32_t discid);
+
+/*
+ * 写入缓存，LRU淘汰最久未用的槽位
+ */
+void mb_cache_put(uint32_t discid, const CDInfo *info);
+
+/*
+ * 通过disc ID查询MusicBrainz API
+ * 成功把结果写入out并返回0，失败返回-1
+ * discid_str: 8位hex字符串，如 "a50d4a0c"
+ */
+int mb_query(const char *discid_str, CDInfo *out);

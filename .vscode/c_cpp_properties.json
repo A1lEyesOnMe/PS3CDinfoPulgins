@@ -1,0 +1,21 @@
+{
+    "configurations": [
+        {
+            "name": "PS3",
+            "includePath": [
+                "${workspaceFolder}/include",
+                "/usr/local/ps3dev/ppu/include",
+                "/usr/local/ps3dev/ppu/include/sysutil",
+                "/usr/local/ps3dev/ppu/powerpc64-ps3-elf/include"
+            ],
+            "defines": [
+                "__PPU__",
+                "__CELLOS_LV2__"
+            ],
+            "compilerPath": "/usr/local/ps3dev/ppu/bin/ppu-gcc",
+            "cStandard": "c99",
+            "intelliSenseMode": "gcc-x64"
+        }
+    ],
+    "version": 4
+}
