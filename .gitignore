@@ -1,0 +1,16 @@
+# 忽略编译目标和依赖文件
+build/
+*.o
+*.d
+
+# 忽略生成的 PS3 二进制插件文件
+*.elf
+
+# 忽略本地编译出的测试可执行文件
+test_formatter
+test_hook_logic
+test_json
+tests/test_struct_size
+
+# 忽略系统自动生成的隐藏文件
+.DS_Store

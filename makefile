@@ -10,6 +10,7 @@ CC          := $(PREFIX)/bin/ppu-gcc
 STRIP       := $(PREFIX)/bin/ppu-strip
 FSELF       := fself
 SPRXLINKER  := sprxlinker
+PRX_CRT     := $(PREFIX)/powerpc64-ps3-elf/lib/lv2-sprx.o
 
 #------------------------------------------------------------------------------
 # 编译选项
@@ -20,7 +21,8 @@ CFLAGS  += -I$(PREFIX)/include
 
 LDFLAGS := -L$(PREFIX)/lib
 LDFLAGS += -nostartfiles
-LDFLAGS += -lhttp -lhttputil -lnet -lsysfs -lsysmodule -llv2
+LDFLAGS += -Wl,-e,_ps3_cd_info_start
+LDFLAGS += -lhttp -lhttputil -lssl -lnet -lsysfs -lsysmodule -llv2
 
 #------------------------------------------------------------------------------
 # 源文件和目标
@@ -63,15 +65,18 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 # 链接.o -> .elf
 $(TARGET_ELF): $(OBJECTS)
 	@echo "  LD      $@"
-	@$(CC) $(CFLAGS) $(OBJECTS) $(LDFLAGS) -o $@
+	@$(CC) $(CFLAGS) $(PRX_CRT) $(OBJECTS) $(LDFLAGS) -o $@
+	@echo "  STRIP   $@"
+	@$(STRIP) --strip-debug $@
+	@echo "  PRX     $@"
+	@$(SPRXLINKER) $@
 	@echo "  SIZE    $@"
 	@ls -lh $@
 
 # 转换.elf -> .sprx
 $(TARGET_SPRX): $(TARGET_ELF)
 	@echo "  FSELF   $@"
-	@$(FSELF) $(TARGET_ELF) $@ 2>/dev/null || \
-	 $(SPRXLINKER) $(TARGET_ELF) $@
+	@$(FSELF) $(TARGET_ELF) $@
 	@echo "  DONE    $@"
 	@ls -lh $@
 
