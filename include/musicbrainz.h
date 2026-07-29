@@ -4,7 +4,7 @@
 #define MAX_TRACKS    99
 #define MAX_STR_LEN   128
 #define MAX_TRACK_LEN 64
-#define CACHE_SIZE    64
+#define CACHE_SIZE    8
 
 /* 存储一张CD的三个核心字段 */
 typedef struct {
@@ -35,6 +35,7 @@ void mb_cache_put(uint32_t discid, const CDInfo *info);
 /*
  * 通过disc ID查询MusicBrainz API
  * 成功把结果写入out并返回0，失败返回-1
- * discid_str: 8位hex字符串，如 "a50d4a0c"
+ * discid_str: CDDB discid 或其他可用占位符字符串
+ * toc_query: 可选的TOC字符串，例如 "1+13+200000+150+15000+..."
  */
-int mb_query(const char *discid_str, CDInfo *out);
+int mb_query(const char *discid_str, const char *toc_query, CDInfo *out);

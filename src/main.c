@@ -36,6 +36,9 @@ static void plugin_log(const char *msg) {
 /* ------------------------------------------------------------------ */
 
 s32 _ps3_cd_info_start(size_t args, void *argp) {
+    (void)args;
+    (void)argp;
+
     plugin_log("PS3 CD Info Plugin starting...");
 
     /* 初始化缓存 */
@@ -59,6 +62,9 @@ s32 _ps3_cd_info_start(size_t args, void *argp) {
 /* ------------------------------------------------------------------ */
 
 s32 _ps3_cd_info_stop(size_t args, void *argp) {
+    (void)args;
+    (void)argp;
+
     plugin_log("PS3 CD Info Plugin stopping...");
 
     hook_net_cleanup();

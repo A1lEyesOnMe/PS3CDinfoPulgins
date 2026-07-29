@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 #define MAX_TRACKS 99
@@ -24,6 +25,14 @@ typedef struct {
  * 成功返回 0，失败返回 -1
  */
 int toc_read(CdromToc *toc);
+
+/*
+ * 将 TOC 格式化为 MusicBrainz fuzzy lookup 所需的查询参数：
+ * "FIRST+LAST+LEADOUT+OFFSET1+OFFSET2+..."
+ *
+ * 成功返回实际写入长度，失败返回 -1。
+ */
+int toc_format_query(const CdromToc *toc, char *out, size_t out_size);
 
 /*
  * 根据TOC计算FreeDB格式的disc ID
