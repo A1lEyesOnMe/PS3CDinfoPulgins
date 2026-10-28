@@ -6,6 +6,7 @@
 #include <net/net.h>
 #include <sysmodule/sysmodule.h>
 #include "gnudb.h"
+#include "log.h"
 
 /* ------------------------------------------------------------------ */
 /* HTTP内存池（纯 HTTP，无 SSL）                                          */
@@ -49,16 +50,23 @@ static int gnudb_http_init(void) {
     if (!modules_ready) {
         if (load_module(SYSMODULE_NET) < 0 ||
             load_module(SYSMODULE_HTTP) < 0) {
+            plugin_log("gnudb: sysmodule load failed (NET/HTTP)");
             return -1;
         }
         modules_ready = 1;
     }
     if (!net_ready) {
-        if (netInitialize() < 0) return -1;
+        if (netInitialize() < 0) {
+            plugin_log("gnudb: netInitialize failed");
+            return -1;
+        }
         net_ready = 1;
     }
     if (!http_ready) {
-        if (httpInit(http_pool, HTTP_POOL_SIZE) < 0) return -1;
+        if (httpInit(http_pool, HTTP_POOL_SIZE) < 0) {
+            plugin_log("gnudb: httpInit failed");
+            return -1;
+        }
         http_ready = 1;
     }
     return 0;
@@ -266,7 +274,11 @@ int gnudb_query(const char *discid_str, const char *toc_query, CDInfo *out) {
     uint32_t id = (uint32_t)strtoul(discid_str, NULL, 16);
     CDInfo *cached = gnudb_cache_get(id);
     if (cached) {
-        if (cached->not_found) return -1;   /* 负缓存：gnudb 已确认无此盘 */
+        if (cached->not_found) {
+            plugin_log("gnudb: discid=%s cached as not-found", discid_str);
+            return -1;   /* 负缓存：gnudb 已确认无此盘 */
+        }
+        plugin_log("gnudb: discid=%s cache hit", discid_str);
         memcpy(out, cached, sizeof(CDInfo));
         return 0;
     }
@@ -275,16 +287,19 @@ int gnudb_query(const char *discid_str, const char *toc_query, CDInfo *out) {
     char url[1400];
     char first_line[160];
     if (build_query_url(discid_str, toc_query, url, sizeof(url)) < 0) {
+        plugin_log("gnudb: failed to build query URL for discid=%s", discid_str);
         return -1;
     }
 
     int32_t status = 0;
     if (http_get(url, first_line, sizeof(first_line), &status) != 0) {
+        plugin_log("gnudb: query HTTP transport failed (discid=%s)", discid_str);
         return -1;
     }
 
     if (status == 202) {
         /* gnudb 无此盘：结果写负缓存，同一张盘重插时不再打网络 */
+        plugin_log("gnudb: discid=%s not in database (202)", discid_str);
         memset(out, 0, sizeof(CDInfo));
         out->discid    = id;
         out->not_found = 1;
@@ -292,7 +307,12 @@ int gnudb_query(const char *discid_str, const char *toc_query, CDInfo *out) {
         return -1;
     }
     /* 200 精确匹配 / 211 多重匹配都取第一条记录 */
-    if (status != 200 && status != 211) return -1;
+    if (status != 200 && status != 211) {
+        plugin_log("gnudb: unexpected query status %d (discid=%s)",
+                   (int)status, discid_str);
+        return -1;
+    }
+    plugin_log("gnudb: query match status=%d discid=%s", (int)status, discid_str);
 
     /* 响应行："200 rock 8a0d4a0c Artist / Album" → 取 category */
     char category[24] = {0};
@@ -307,7 +327,10 @@ int gnudb_query(const char *discid_str, const char *toc_query, CDInfo *out) {
             category[i++] = *p++;
         }
         category[i] = '\0';
-        if (i == 0) return -1;
+        if (i == 0) {
+            plugin_log("gnudb: empty category in query response");
+            return -1;
+        }
     }
 
     /* 第二步：cddb read，取完整记录 */
@@ -323,15 +346,21 @@ int gnudb_query(const char *discid_str, const char *toc_query, CDInfo *out) {
 
     if (http_get(url, response, sizeof(response), &status) != 0 ||
         status != 200) {
+        plugin_log("gnudb: read failed (transport error or status %d, "
+                   "category=%s)", (int)status, category);
         return -1;
     }
 
     memset(out, 0, sizeof(CDInfo));
     if (gnudb_parse_record(response, out) < 0 || !out->valid) {
+        plugin_log("gnudb: record parse failed (category=%s discid=%s)",
+                   category, discid_str);
         return -1;
     }
 
     out->discid = id;
     gnudb_cache_put(id, out);
+    plugin_log("gnudb: read OK: %s - %s (%d tracks)",
+               out->artist, out->album, out->track_count);
     return 0;
 }

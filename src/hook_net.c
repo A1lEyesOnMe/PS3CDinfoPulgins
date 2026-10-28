@@ -16,6 +16,7 @@
 #include "toc_reader.h"
 #include "gnudb.h"
 #include "formatter.h"
+#include "log.h"
 
 /* ------------------------------------------------------------------ */
 /* 全局状态                                                              */
@@ -194,6 +195,11 @@ static ssize_t hooked_send(int sock, const void *buf, size_t len, int flags) {
                              sizeof(current_toc)) == 0) {
             discid_loaded = 1;
             current_cddb_socket = sock;
+            plugin_log("CDDB request intercepted: discid=%s sock=%d",
+                       current_discid, sock);
+        } else {
+            plugin_log("CDDB request but TOC unavailable (drive read + "
+                       "request parse both failed)");
         }
     }
     
@@ -218,6 +224,8 @@ static ssize_t hooked_recv(int sock, void *buf, size_t len, int flags) {
     /* 查询gnudb */
     CDInfo info;
     if (gnudb_query(current_discid, current_toc, &info) < 0) {
+        plugin_log("gnudb query failed for discid=%s (kept original response)",
+                   current_discid);
         return ret;
     }
 
@@ -225,10 +233,14 @@ static ssize_t hooked_recv(int sock, void *buf, size_t len, int flags) {
     char response[4096];
     int response_len = format_cddb_response(response, sizeof(response), &info);
     if (response_len < 0 || response_len > (int)len) {
+        plugin_log("format response failed or too large (len=%d)", response_len);
         return ret;
     }
 
     memcpy(buf, response, response_len);
+
+    plugin_log("replaced CDDB response: %s - %s (%d tracks)",
+               info.artist, info.album, info.track_count);
 
     discid_loaded = 0;
     current_cddb_socket = -1;
@@ -351,6 +363,7 @@ int hook_net_init(void) {
         resolve_net_export(netSend_stub, &original_send_entry, &send_toc) < 0) {
         original_recv_entry = NULL;
         original_send_entry = NULL;
+        plugin_log("ERROR: failed to resolve sys_net recv/send export");
         return -1;
     }
     if ((hooked_recv_descriptor->entry >> 32) != 0 ||
@@ -359,6 +372,7 @@ int hook_net_init(void) {
         (hooked_send_descriptor->toc >> 32) != 0) {
         original_recv_entry = NULL;
         original_send_entry = NULL;
+        plugin_log("ERROR: hook descriptor address exceeds 32-bit");
         return -1;
     }
 
@@ -381,6 +395,7 @@ int hook_net_init(void) {
                              sizeof(recv_trampoline_code)) < 0) {
         original_recv_entry = NULL;
         original_send_entry = NULL;
+        plugin_log("ERROR: PS3MAPI write failed (recv trampoline)");
         return -1;
     }
     recv_trampoline_descriptor.entry = (uint64_t)recv_trampoline;
@@ -395,6 +410,7 @@ int hook_net_init(void) {
                              sizeof(recv_hook_jump)) < 0) {
         original_recv_entry = NULL;
         original_send_entry = NULL;
+        plugin_log("ERROR: PS3MAPI write failed (recv prologue)");
         return -1;
     }
 
@@ -416,6 +432,7 @@ int hook_net_init(void) {
                              sizeof(recv_original_instructions));
         original_recv_entry = NULL;
         original_send_entry = NULL;
+        plugin_log("ERROR: PS3MAPI write failed (send trampoline)");
         return -1;
     }
     send_trampoline_descriptor.entry = (uint64_t)send_trampoline;
@@ -432,9 +449,12 @@ int hook_net_init(void) {
                              sizeof(recv_original_instructions));
         original_recv_entry = NULL;
         original_send_entry = NULL;
+        plugin_log("ERROR: PS3MAPI write failed (send prologue)");
         return -1;
     }
 
+    plugin_log("network hook installed (recv=%p send=%p)",
+               original_recv_entry, original_send_entry);
     return 0;
 }
 
