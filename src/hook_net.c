@@ -14,7 +14,7 @@
 #include <sys/process.h>
 #include "hook_net.h"
 #include "toc_reader.h"
-#include "musicbrainz.h"
+#include "gnudb.h"
 #include "formatter.h"
 
 /* ------------------------------------------------------------------ */
@@ -215,9 +215,9 @@ static ssize_t hooked_recv(int sock, void *buf, size_t len, int flags) {
     if (!is_cddb_response(buf, ret)) return ret;
     if (!buffer_contains(buf, ret, ".\r\n")) return ret;
 
-    /* 查询MusicBrainz */
+    /* 查询gnudb */
     CDInfo info;
-    if (mb_query(current_discid, current_toc, &info) < 0) {
+    if (gnudb_query(current_discid, current_toc, &info) < 0) {
         return ret;
     }
 

@@ -1,5 +1,5 @@
 #pragma once
-#include "musicbrainz.h"
+#include "gnudb.h"
 
 /*
  * 将CDInfo格式化为CDDB协议响应

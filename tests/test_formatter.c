@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
-#include "../include/musicbrainz.h"
+#include "../include/gnudb.h"
 #include "../include/formatter.h"
 
 int main() {

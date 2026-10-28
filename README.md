@@ -9,8 +9,9 @@
 ### 项目简介
 
 PS3 CD Info Plugin 是一个面向 PS3 XMB/VSH 的 SPRX 插件。它从物理光驱读取
-音频 CD 的真实 TOC（Table of Contents），使用 TOC 查询 MusicBrainz，并把查询
-结果转换为 XMB 可识别的 CDDB 响应，从而为音频 CD 显示艺术家、专辑和曲目名称。
+音频 CD 的真实 TOC（Table of Contents），使用 TOC 计算 CDDB disc ID 并查询
+gnudb（freedb 的社区后继、纯 HTTP），把查询结果转换为 XMB 可识别的 CDDB
+响应，从而为音频 CD 显示艺术家、专辑和曲目名称。
 
 插件生成的目标文件为：
 
@@ -24,15 +25,15 @@ ps3_cd_info_plugin.sprx
 flowchart LR
     A["XMB 发送 CDDB query"] --> B["拦截 sys_net send"]
     B --> C["通过 LV2/ATAPI 读取物理 CD TOC"]
-    C --> D["生成 MusicBrainz fuzzy TOC"]
-    D --> E["查询 MusicBrainz HTTPS API"]
-    E --> F["生成 CDDB 格式响应"]
+    C --> D["计算 CDDB disc ID"]
+    D --> E["查询 gnudb（纯 HTTP）"]
+    E --> F["解析 CDDB 记录并生成响应"]
     F --> G["拦截 sys_net recv 并替换响应"]
     G --> H["XMB 显示唱片信息"]
 ```
 
 如果直接读取光驱失败，插件会尝试从 XMB 发出的 CDDB query 中还原 TOC 参数；
-如果 MusicBrainz 查询或响应解析失败，则保留原始 CDDB 响应，不破坏原请求。
+如果 gnudb 查询或响应解析失败，则保留原始 CDDB 响应，不破坏原请求。
 
 ### 模块说明
 
@@ -42,8 +43,9 @@ flowchart LR
 | `src/toc_reader.c` | 打开物理 BDVD、发送 ATAPI `READ TOC/PMA/ATIP (0x43)`、解析轨道与 Lead-out |
 | `src/hook_net.c` | 拦截共享 `sys_net` 的 `send/recv`，提取 CDDB 请求并替换响应 |
 | `src/cddb_query.c` | CDDB 请求文本解析（disc ID 提取与 fuzzy TOC 还原），可主机侧单测 |
-| `src/musicbrainz.c` | HTTPS 初始化、MusicBrainz fuzzy TOC 查询、JSON 解析和 LRU 缓存 |
-| `src/formatter.c` | 把 MusicBrainz 数据格式化为 XMB 使用的 CDDB 文本 |
+| `src/gnudb.c` | gnudb HTTP 查询（cddb query + cddb read 两步）、LRU 缓存 |
+| `src/gnudb_parse.c` | CDDB 文本记录解析（DTITLE/TTITLE/续行），可主机侧单测 |
+| `src/formatter.c` | 把 gnudb 结果格式化为 XMB 使用的 CDDB 文本 |
 | `boot_plugins.txt` | Cobra/Mamba 启动插件列表样例 |
 
 ### 真实 TOC 读取
@@ -57,14 +59,14 @@ flowchart LR
 - ATAPI 命令：`READ TOC/PMA/ATIP (0x43)`
 - 返回格式：Format 0，MSF 地址
 
-读取结果会转换为 MusicBrainz 所需的格式：
+读取结果会转换为 CDDB/gnudb 所需的格式：
 
 ```text
 FIRST+LAST+LEADOUT+OFFSET1+OFFSET2+...
 ```
 
 轨道偏移和 Lead-out 的单位均为 CD frame（每秒 75 frame），并包含标准的
-150-frame 起始偏移。
+150-frame 起始偏移。同一字符串也用于拼接 gnudb 的 `cddb query` URL。
 
 ### 网络 Hook
 
@@ -87,10 +89,10 @@ PS3MAPI 写内存功能时，插件会拒绝安装 Hook，避免直接写代码�
 
 - PS3DEV/PSL1GHT PPU 工具链
 - `ppu-gcc`
-- `ppu-strip`
+- `ppu-objcopy`
 - `sprxlinker`
 - `fself`
-- PSL1GHT 的 HTTP、HTTPS、SSL、NET、SysFS 和 SysModule 库
+- PSL1GHT 的 HTTP、NET、SysFS 和 SysModule 库（gnudb 为纯 HTTP，无需 SSL）
 
 当前 `makefile` 默认工具链路径为：
 
@@ -160,15 +162,14 @@ make clean
 - **`Failed to install network hook`**：通常表示 PS3MAPI 不可用、
   `sys_net` 导入尚未解析，或当前环境不允许修改 VSH 代码页。
 - **能播放 CD，但没有新信息**：检查 PS3 网络、DNS、系统时间以及
-  MusicBrainz HTTPS 连接。
-- **部分唱片查不到**：MusicBrainz 可能没有对应 TOC，或同一 TOC 存在多个
-  fuzzy match。
+  gnudb（gnudb.gnudb.org）的连通性。
+- **部分唱片查不到**：gnudb 可能没有对应 disc ID（写入负缓存，重插不会
+  重复查询）。
 - **插件导致启动异常**：通过所用 CFW/HEN 的安全启动方式禁用启动插件，
   然后删除 `boot_plugins.txt` 中的插件条目。
 
-PS3 系统 SSL 较旧，当前 MusicBrainz HTTPS 的 TLS/证书兼容性必须在具体固件
-上验证。若 TLS 握手失败，需要使用兼容的 HTTPS 代理或在后续版本中加入可配置
-的查询代理。
+gnudb 为纯 HTTP 查询，不依赖 PS3 的 SSL 栈，规避了系统 TLS 过旧导致的
+握手兼容性问题。
 
 ### 验证
 
@@ -208,8 +209,9 @@ make test
 ### Overview
 
 PS3 CD Info Plugin is an SPRX plugin for the PS3 XMB/VSH. It reads the real
-audio-CD TOC (Table of Contents) from the physical drive, looks it up through
-MusicBrainz, and converts the result into a CDDB response understood by XMB.
+audio-CD TOC (Table of Contents) from the physical drive, computes the CDDB
+disc ID, looks it up through gnudb (the community successor to freedb, plain
+HTTP), and converts the result into a CDDB response understood by XMB.
 This allows XMB to display the artist, album, and track titles for an audio CD.
 
 The generated plugin is:
@@ -224,15 +226,15 @@ ps3_cd_info_plugin.sprx
 flowchart LR
     A["XMB sends a CDDB query"] --> B["Hook sys_net send"]
     B --> C["Read the physical CD TOC through LV2/ATAPI"]
-    C --> D["Build a MusicBrainz fuzzy TOC"]
-    D --> E["Query the MusicBrainz HTTPS API"]
-    E --> F["Create a CDDB-formatted response"]
+    C --> D["Compute the CDDB disc ID"]
+    D --> E["Query gnudb (plain HTTP)"]
+    E --> F["Parse the CDDB record and build the response"]
     F --> G["Hook sys_net recv and replace the response"]
     G --> H["XMB displays the disc metadata"]
 ```
 
 If direct drive access fails, the plugin attempts to reconstruct the TOC from
-XMB's outgoing CDDB query. If the MusicBrainz lookup or response parsing fails,
+XMB's outgoing CDDB query. If the gnudb lookup or response parsing fails,
 the original CDDB response is returned unchanged.
 
 ### Modules
@@ -243,8 +245,9 @@ the original CDDB response is returned unchanged.
 | `src/toc_reader.c` | Opens the physical BDVD device, sends ATAPI `READ TOC/PMA/ATIP (0x43)`, and parses tracks and lead-out |
 | `src/hook_net.c` | Hooks the shared `sys_net` `send/recv` exports, captures CDDB queries, and replaces responses |
 | `src/cddb_query.c` | CDDB request text parsing (disc ID extraction and fuzzy TOC reconstruction), unit-testable on the host |
-| `src/musicbrainz.c` | Initializes HTTPS, performs MusicBrainz fuzzy TOC queries, parses JSON, and manages the LRU cache |
-| `src/formatter.c` | Formats MusicBrainz metadata as CDDB text for XMB |
+| `src/gnudb.c` | gnudb HTTP lookup (cddb query + cddb read) and the LRU cache |
+| `src/gnudb_parse.c` | CDDB record text parsing (DTITLE/TTITLE/continuation lines), unit-testable on the host |
+| `src/formatter.c` | Formats gnudb metadata as CDDB text for XMB |
 | `boot_plugins.txt` | Example Cobra/Mamba boot-plugin list |
 
 ### Real TOC access
@@ -258,10 +261,11 @@ the original CDDB response is returned unchanged.
 - ATAPI command: `READ TOC/PMA/ATIP (0x43)`
 - Response format: Format 0 with MSF addresses
 
-The parsed TOC is converted to the MusicBrainz fuzzy lookup format:
+The parsed TOC yields a CDDB disc ID and the track/lead-out offsets that serve
+as the gnudb lookup key:
 
 ```text
-FIRST+LAST+LEADOUT+OFFSET1+OFFSET2+...
+cddb query DISCID NTRACKS OFF1 OFF2 ... TOTAL_SECONDS
 ```
 
 Track offsets and the lead-out are expressed in CD frames (75 frames per
@@ -288,10 +292,10 @@ fails safely instead of attempting a direct write that could crash VSH.
 
 - PS3DEV/PSL1GHT PPU toolchain
 - `ppu-gcc`
-- `ppu-strip`
+- `ppu-objcopy`
 - `sprxlinker`
 - `fself`
-- PSL1GHT HTTP, HTTPS, SSL, NET, SysFS, and SysModule libraries
+- PSL1GHT HTTP, NET, SysFS, and SysModule libraries
 
 The default toolchain prefix in `makefile` is:
 
@@ -361,16 +365,12 @@ Common issues:
 - **`Failed to install network hook`:** PS3MAPI may be unavailable, the
   `sys_net` imports may not be resolved, or the environment may reject VSH text
   modifications.
-- **The CD plays but no new metadata appears:** check network access, DNS,
-  system time, and MusicBrainz HTTPS connectivity.
-- **Some discs are not found:** MusicBrainz may not contain the TOC, or the TOC
-  may produce multiple fuzzy matches.
+- **The CD plays but no new metadata appears:** check network access, DNS, and
+  system time, then confirm the gnudb endpoint is reachable from the PS3.
+- **Some discs are not found:** gnudb may not contain the disc ID for that
+  release, or the disc ID may not match any entry.
 - **Boot problem after installation:** use the safe-boot mechanism provided by
   your CFW/HEN loader to disable boot plugins, then remove the plugin entry.
-
-The PS3 system SSL implementation is old. Compatibility with the current
-MusicBrainz TLS and certificate configuration must be verified on the target
-firmware. A compatible HTTPS proxy may be required if the TLS handshake fails.
 
 ### Validation
 

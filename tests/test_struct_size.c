@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include "../include/musicbrainz.h"
+#include "../include/gnudb.h"
 
 int main() {
     printf("CDInfo size: %zu bytes\n", sizeof(CDInfo));

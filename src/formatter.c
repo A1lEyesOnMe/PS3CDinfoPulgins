@@ -33,9 +33,13 @@ int format_cddb_response(char *buf, size_t buf_size, const CDInfo *info) {
     if (written < 0 || p + written >= end) return -1;
     p += written;
 
-    /* DTITLE=Artist / Album */
-    written = snprintf(p, end - p, "DTITLE=%s / %s\r\n",
-                       info->artist, info->album);
+    /* DTITLE=Artist / Album（gnudb 个别记录可能没有艺术家，省略分隔符） */
+    if (info->artist[0]) {
+        written = snprintf(p, end - p, "DTITLE=%s / %s\r\n",
+                           info->artist, info->album);
+    } else {
+        written = snprintf(p, end - p, "DTITLE=%s\r\n", info->album);
+    }
     if (written < 0 || p + written >= end) return -1;
     p += written;
 

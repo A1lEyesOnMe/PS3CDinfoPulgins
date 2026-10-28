@@ -4,7 +4,7 @@
 #include <lv2/sysfs.h>
 #include <ppu-types.h>
 #include "hook_net.h"
-#include "musicbrainz.h"
+#include "gnudb.h"
 
 /* ------------------------------------------------------------------ */
 /* PRX入口函数声明                                                       */
@@ -42,7 +42,7 @@ s32 _ps3_cd_info_start(size_t args, void *argp) {
     plugin_log("PS3 CD Info Plugin starting...");
 
     /* 初始化缓存 */
-    mb_cache_init();
+    gnudb_cache_init();
     plugin_log("Cache initialized");
 
     /* 安装网络hook */
