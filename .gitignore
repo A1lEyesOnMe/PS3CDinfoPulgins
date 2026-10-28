@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# 构建产物
+build/
+*.o
+*.d
+*.elf
+*.sprx
+
+# 主机侧测试可执行文件
+test_formatter
+test_hook_logic
+test_json
+tests/test_struct_size
+
+# 编辑器
+.vscode/

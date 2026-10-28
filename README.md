@@ -41,6 +41,7 @@ flowchart LR
 | `src/main.c` | SPRX 启停入口、缓存初始化、网络 Hook 安装和运行日志 |
 | `src/toc_reader.c` | 打开物理 BDVD、发送 ATAPI `READ TOC/PMA/ATIP (0x43)`、解析轨道与 Lead-out |
 | `src/hook_net.c` | 拦截共享 `sys_net` 的 `send/recv`，提取 CDDB 请求并替换响应 |
+| `src/cddb_query.c` | CDDB 请求文本解析（disc ID 提取与 fuzzy TOC 还原），可主机侧单测 |
 | `src/musicbrainz.c` | HTTPS 初始化、MusicBrainz fuzzy TOC 查询、JSON 解析和 LRU 缓存 |
 | `src/formatter.c` | 把 MusicBrainz 数据格式化为 XMB 使用的 CDDB 文本 |
 | `boot_plugins.txt` | Cobra/Mamba 启动插件列表样例 |
@@ -171,13 +172,10 @@ PS3 系统 SSL 较旧，当前 MusicBrainz HTTPS 的 TLS/证书兼容性必须�
 
 ### 验证
 
-主机侧测试：
+主机侧测试（无需 PS3 工具链）：
 
 ```sh
-./test_formatter
-./test_hook_logic
-./test_json
-./tests/test_struct_size
+make test
 ```
 
 检查 PRX 元数据：
@@ -244,6 +242,7 @@ the original CDDB response is returned unchanged.
 | `src/main.c` | SPRX start/stop entry points, cache initialization, hook setup, and logging |
 | `src/toc_reader.c` | Opens the physical BDVD device, sends ATAPI `READ TOC/PMA/ATIP (0x43)`, and parses tracks and lead-out |
 | `src/hook_net.c` | Hooks the shared `sys_net` `send/recv` exports, captures CDDB queries, and replaces responses |
+| `src/cddb_query.c` | CDDB request text parsing (disc ID extraction and fuzzy TOC reconstruction), unit-testable on the host |
 | `src/musicbrainz.c` | Initializes HTTPS, performs MusicBrainz fuzzy TOC queries, parses JSON, and manages the LRU cache |
 | `src/formatter.c` | Formats MusicBrainz metadata as CDDB text for XMB |
 | `boot_plugins.txt` | Example Cobra/Mamba boot-plugin list |
@@ -375,13 +374,10 @@ firmware. A compatible HTTPS proxy may be required if the TLS handshake fails.
 
 ### Validation
 
-Run the existing host-side tests:
+Run the host-side tests (no PS3 toolchain required):
 
 ```sh
-./test_formatter
-./test_hook_logic
-./test_json
-./tests/test_struct_size
+make test
 ```
 
 Inspect the PRX metadata:

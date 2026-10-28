@@ -83,108 +83,30 @@ static int      current_cddb_socket = -1;
 
 /*
  * 判断是否是CDDB请求
- * 格式: "cddb query DISCID NTRACKS ..."
+ * 裸协议形如 "cddb query ..."；HTTP 形式则是
+ * "GET /~cddb/cddb.cgi?cmd=cddb+query+..."，标记出现在前部。
  */
 static int is_cddb_request(const void *buf, ssize_t len) {
     static const char lower_query[] = "cddb query ";
     static const char upper_query[] = "CDDB query ";
     const uint8_t *bytes = (const uint8_t *)buf;
+    const size_t query_len = sizeof(lower_query) - 1;
 
-    if (!buf || len < (ssize_t)(sizeof(lower_query) - 1)) return 0;
+    if (!buf || len < (ssize_t)query_len) return 0;
 
-    for (ssize_t i = 0;
-         i <= len - (ssize_t)(sizeof(lower_query) - 1);
-         i++) {
-        if (memcmp(bytes + i, lower_query, sizeof(lower_query) - 1) == 0 ||
-            memcmp(bytes + i, upper_query, sizeof(upper_query) - 1) == 0) {
+    /* 快速路径：绝大多数数据包在首字节即可排除 */
+    if (memcmp(bytes, lower_query, query_len) == 0 ||
+        memcmp(bytes, upper_query, query_len) == 0) {
+        return 1;
+    }
+
+    /* 兜底扫描限定在请求头部范围内（URL/query 一定在前面） */
+    ssize_t scan = (len < 1024) ? len : 1024;
+    for (ssize_t i = 1; i <= scan - (ssize_t)query_len; i++) {
+        if (memcmp(bytes + i, lower_query, query_len) == 0 ||
+            memcmp(bytes + i, upper_query, query_len) == 0) {
             return 1;
         }
-    }
-
-    return 0;
-}
-
-/*
- * 从CDDB请求中提取disc ID
- * 格式: "cddb query a50d4a0c 13 150 15000 ..."
- */
-int parse_cddb_query(const char *request, char *discid_out,
-                             size_t discid_out_size,
-                             char *toc_out, size_t toc_out_size) {
-    if (!request || !discid_out || discid_out_size < 9 ||
-        !toc_out || toc_out_size == 0) {
-        return -1;
-    }
-
-    const char *p = strstr(request, "cddb query ");
-    if (!p) p = strstr(request, "CDDB query ");
-    if (!p) return -1;
-
-    p += strlen("cddb query ");
-    while (*p == ' ') p++;
-
-    size_t i = 0;
-    while (*p && *p != ' ' && *p != '\r' && *p != '\n' && i < discid_out_size - 1) {
-        discid_out[i++] = *p++;
-    }
-    discid_out[i] = '\0';
-    if (i != 8) return -1;
-    for (size_t j = 0; j < 8; j++) {
-        char c = discid_out[j];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-              (c >= 'A' && c <= 'F'))) {
-            return -1;
-        }
-    }
-
-    while (*p == ' ') p++;
-    char *endptr;
-    long track_count = strtol(p, &endptr, 10);
-    if (track_count <= 0 || track_count > MAX_TRACKS) return -1;
-    p = endptr;
-
-    uint32_t offsets[MAX_TRACKS] = {0};
-    for (int idx = 0; idx < track_count; idx++) {
-        while (*p == ' ') p++;
-        if (!*p || *p == '\r' || *p == '\n') return -1;
-        char *next;
-        long offset = strtol(p, &next, 10);
-        if (next == p || offset < 0 || (uint64_t)offset > UINT32_MAX) {
-            return -1;
-        }
-        if (idx > 0 && (uint32_t)offset <= offsets[idx - 1]) return -1;
-        offsets[idx] = (uint32_t)offset;
-        p = next;
-    }
-
-    /*
-     * CDDB 的最后一个字段是从第一轨到 lead-out 的秒数，不是帧偏移。
-     * fuzzy TOC 需要绝对帧，因此按 FreeDB 的 disc length 定义还原。
-     */
-    while (*p == ' ') p++;
-    char *next;
-    long total_seconds = strtol(p, &next, 10);
-    if (next == p || total_seconds <= 0 ||
-        (uint64_t)total_seconds > UINT32_MAX / 75U) {
-        return -1;
-    }
-    uint64_t leadout = ((uint64_t)total_seconds +
-                        offsets[0] / 75U) * 75U;
-    if (leadout > UINT32_MAX ||
-        leadout <= offsets[track_count - 1]) {
-        return -1;
-    }
-
-    int written = snprintf(toc_out, toc_out_size, "1+%ld+%u",
-                           track_count, (uint32_t)leadout);
-    if (written < 0 || (size_t)written >= toc_out_size) return -1;
-
-    for (int idx = 0; idx < track_count; idx++) {
-        size_t remaining = toc_out_size - (size_t)written;
-        int appended = snprintf(toc_out + written, remaining, "+%u",
-                                offsets[idx]);
-        if (appended < 0 || (size_t)appended >= remaining) return -1;
-        written += appended;
     }
 
     return 0;
@@ -288,13 +210,10 @@ static ssize_t hooked_recv(int sock, void *buf, size_t len, int flags) {
 
     if (ret <= 0) return ret;
     if (sock != current_cddb_socket) return ret;
+    /* 廉价检查放前面，避免对无关数据做全文标记扫描 */
+    if (!discid_loaded || !current_discid[0]) return ret;
     if (!is_cddb_response(buf, ret)) return ret;
     if (!buffer_contains(buf, ret, ".\r\n")) return ret;
-
-    /* 检查是否已获取disc ID */
-    if (!discid_loaded || !current_discid[0]) {
-        return ret;  /* 没有disc ID，返回原始数据 */
-    }
 
     /* 查询MusicBrainz */
     CDInfo info;
@@ -309,11 +228,7 @@ static ssize_t hooked_recv(int sock, void *buf, size_t len, int flags) {
         return ret;
     }
 
-    /* 替换内容并验证 */
     memcpy(buf, response, response_len);
-    if (memcmp(buf, response, response_len) != 0) {
-        return ret;
-    }
 
     discid_loaded = 0;
     current_cddb_socket = -1;

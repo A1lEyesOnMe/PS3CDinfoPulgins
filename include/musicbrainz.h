@@ -13,7 +13,8 @@ typedef struct {
     char     tracks[MAX_TRACKS][MAX_TRACK_LEN];
     uint8_t  track_count;
     uint32_t discid;
-    uint8_t  valid;  /* 0=空槽 1=有效数据 */
+    uint8_t  valid;      /* 0=空槽 1=有效数据 */
+    uint8_t  not_found;  /* 1=MusicBrainz 已确认查不到（404 负缓存） */
 } CDInfo;
 
 /*

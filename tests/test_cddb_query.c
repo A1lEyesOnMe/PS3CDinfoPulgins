@@ -27,7 +27,12 @@ int main(void) {
 
     assert(parse_cddb_query(request, discid, sizeof(discid), toc, sizeof(toc)) == 0);
     assert(strcmp(discid, "a50d4a0c") == 0);
-    assert(strcmp(toc, "1+13+200000+150+15000+28000+42000+58000+72000+88000+103000+118000+135000+152000+168000+185000") == 0);
+    /*
+     * CDDB 请求最后一个字段是总秒数（200000），还原为绝对帧：
+     * leadout = (200000 + 150/75) * 75 = 15000150
+     * MusicBrainz fuzzy TOC 的 leadout 必须是帧而不是秒。
+     */
+    assert(strcmp(toc, "1+13+15000150+150+15000+28000+42000+58000+72000+88000+103000+118000+135000+152000+168000+185000") == 0);
 
     printf("✅ parse_cddb_query works: discid=%s toc=%s\n", discid, toc);
     return 0;
