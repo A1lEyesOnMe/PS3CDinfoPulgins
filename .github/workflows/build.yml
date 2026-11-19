@@ -16,6 +16,8 @@ jobs:
 
     env:
       PS3DEV: /usr/local/ps3dev
+      # ppu-gcc 链接 PSL1GHT 库时需要该变量定位 SDK 根目录
+      PSL1GHT: /usr/local/ps3dev
       # bucanero/ps3toolchain 官方预编译包：完整 PPU/SPU 工具链 + PSL1GHT 库 + fself/sprxlinker
       TOOLCHAIN_URL: https://github.com/bucanero/ps3toolchain/releases/download/ubuntu-latest-fad3b5fb/ps3dev-ubuntu-latest-2020-08-31.tar.gz
       TOOLCHAIN_KEY: ps3dev-ubuntu-2020-08-31-v1
@@ -52,39 +54,12 @@ jobs:
           test -f "$PS3DEV/ppu/powerpc64-ps3-elf/lib/lv2-sprx.o"
 
       # 使用 -B 强制全新构建，避免缓存污染；makefile 的 PREFIX 默认即 /usr/local/ps3dev。
+      # PSL1GHT 与 PS3DEV 由 job 级 env 提供，ppu-gcc 链接阶段依赖它们定位 SDK 头文件与库。
       - name: Build
         run: |
-          set +e
-          set -o pipefail
+          set -euo pipefail
           export PATH="$PS3DEV/bin:$PS3DEV/ppu/bin:$PATH"
-          make -B 2>&1 | tee /tmp/build.log
-          rc=$?
-          # 无论成败都把日志尾部写入 step summary，便于从网页/API 读取
-          {
-            echo "### Build log (tail)"
-            echo '```'
-            tail -n 80 /tmp/build.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$rc" -ne 0 ]; then
-            echo "::group::Fatal error lines"
-            grep -nEi 'error:|Error [0-9]+|\*\*\*|No such file|cannot find|command not found|not found|undefined reference|Killed|make\[' /tmp/build.log || echo "(no standard error line matched)"
-            echo "::endgroup::"
-            grep -Ei 'error:|Error [0-9]+|\*\*\*|No such file|cannot find|command not found|not found|undefined reference|Killed|make\[' /tmp/build.log | head -20 | while IFS= read -r line; do
-              line="${line//'%'/'%25'}"
-              line="${line//$'\r'/'%0D'}"
-              [ -n "$line" ] && echo "::error::$line"
-            done
-            # 若没匹配到标准错误行，把日志最后 8 行也外显，便于定位
-            if ! grep -qEi 'error:|Error [0-9]+|\*\*\*|No such file|cannot find|command not found|not found|undefined reference' /tmp/build.log; then
-              tail -n 8 /tmp/build.log | while IFS= read -r line; do
-                line="${line//'%'/'%25'}"
-                line="${line//$'\r'/'%0D'}"
-                [ -n "$line" ] && echo "::error::[tail] $line"
-              done
-            fi
-          fi
-          exit "$rc"
+          make -B
 
       - name: Verify artifacts
         run: |
