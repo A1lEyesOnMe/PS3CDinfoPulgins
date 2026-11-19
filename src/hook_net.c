@@ -14,9 +14,10 @@
 #include <sys/process.h>
 #include "hook_net.h"
 #include "toc_reader.h"
-#include "gnudb.h"
+#include "musicbrainz.h"
 #include "formatter.h"
-#include "log.h"
+#include "amg_response.h"
+#include "debug.h"
 
 /* ------------------------------------------------------------------ */
 /* 全局状态                                                              */
@@ -84,30 +85,108 @@ static int      current_cddb_socket = -1;
 
 /*
  * 判断是否是CDDB请求
- * 裸协议形如 "cddb query ..."；HTTP 形式则是
- * "GET /~cddb/cddb.cgi?cmd=cddb+query+..."，标记出现在前部。
+ * 格式: "cddb query DISCID NTRACKS ..."
  */
 static int is_cddb_request(const void *buf, ssize_t len) {
     static const char lower_query[] = "cddb query ";
     static const char upper_query[] = "CDDB query ";
     const uint8_t *bytes = (const uint8_t *)buf;
-    const size_t query_len = sizeof(lower_query) - 1;
 
-    if (!buf || len < (ssize_t)query_len) return 0;
+    if (!buf || len < (ssize_t)(sizeof(lower_query) - 1)) return 0;
 
-    /* 快速路径：绝大多数数据包在首字节即可排除 */
-    if (memcmp(bytes, lower_query, query_len) == 0 ||
-        memcmp(bytes, upper_query, query_len) == 0) {
-        return 1;
-    }
-
-    /* 兜底扫描限定在请求头部范围内（URL/query 一定在前面） */
-    ssize_t scan = (len < 1024) ? len : 1024;
-    for (ssize_t i = 1; i <= scan - (ssize_t)query_len; i++) {
-        if (memcmp(bytes + i, lower_query, query_len) == 0 ||
-            memcmp(bytes + i, upper_query, query_len) == 0) {
+    for (ssize_t i = 0;
+         i <= len - (ssize_t)(sizeof(lower_query) - 1);
+         i++) {
+        if (memcmp(bytes + i, lower_query, sizeof(lower_query) - 1) == 0 ||
+            memcmp(bytes + i, upper_query, sizeof(upper_query) - 1) == 0) {
             return 1;
         }
+    }
+
+    return 0;
+}
+
+/*
+ * 从CDDB请求中提取disc ID
+ * 格式: "cddb query a50d4a0c 13 150 15000 ..."
+ */
+int parse_cddb_query(const char *request, char *discid_out,
+                             size_t discid_out_size,
+                             char *toc_out, size_t toc_out_size) {
+    if (!request || !discid_out || discid_out_size < 9 ||
+        !toc_out || toc_out_size == 0) {
+        return -1;
+    }
+
+    const char *p = strstr(request, "cddb query ");
+    if (!p) p = strstr(request, "CDDB query ");
+    if (!p) return -1;
+
+    p += strlen("cddb query ");
+    while (*p == ' ') p++;
+
+    size_t i = 0;
+    while (*p && *p != ' ' && *p != '\r' && *p != '\n' && i < discid_out_size - 1) {
+        discid_out[i++] = *p++;
+    }
+    discid_out[i] = '\0';
+    if (i != 8) return -1;
+    for (size_t j = 0; j < 8; j++) {
+        char c = discid_out[j];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) {
+            return -1;
+        }
+    }
+
+    while (*p == ' ') p++;
+    char *endptr;
+    long track_count = strtol(p, &endptr, 10);
+    if (track_count <= 0 || track_count > MAX_TRACKS) return -1;
+    p = endptr;
+
+    uint32_t offsets[MAX_TRACKS] = {0};
+    for (int idx = 0; idx < track_count; idx++) {
+        while (*p == ' ') p++;
+        if (!*p || *p == '\r' || *p == '\n') return -1;
+        char *next;
+        long offset = strtol(p, &next, 10);
+        if (next == p || offset < 0 || (uint64_t)offset > UINT32_MAX) {
+            return -1;
+        }
+        if (idx > 0 && (uint32_t)offset <= offsets[idx - 1]) return -1;
+        offsets[idx] = (uint32_t)offset;
+        p = next;
+    }
+
+    /*
+     * CDDB 的最后一个字段是从第一轨到 lead-out 的秒数，不是帧偏移。
+     * fuzzy TOC 需要绝对帧，因此按 FreeDB 的 disc length 定义还原。
+     */
+    while (*p == ' ') p++;
+    char *next;
+    long total_seconds = strtol(p, &next, 10);
+    if (next == p || total_seconds <= 0 ||
+        (uint64_t)total_seconds > UINT32_MAX / 75U) {
+        return -1;
+    }
+    uint64_t leadout = ((uint64_t)total_seconds +
+                        offsets[0] / 75U) * 75U;
+    if (leadout > UINT32_MAX ||
+        leadout <= offsets[track_count - 1]) {
+        return -1;
+    }
+
+    int written = snprintf(toc_out, toc_out_size, "1+%ld+%u",
+                           track_count, (uint32_t)leadout);
+    if (written < 0 || (size_t)written >= toc_out_size) return -1;
+
+    for (int idx = 0; idx < track_count; idx++) {
+        size_t remaining = toc_out_size - (size_t)written;
+        int appended = snprintf(toc_out + written, remaining, "+%u",
+                                offsets[idx]);
+        if (appended < 0 || (size_t)appended >= remaining) return -1;
+        written += appended;
     }
 
     return 0;
@@ -185,21 +264,28 @@ static ssize_t hooked_send(int sock, const void *buf, size_t len, int flags) {
         memset(current_discid, 0, sizeof(current_discid));
         memset(current_toc, 0, sizeof(current_toc));
 
+        debug_log(DEBUG_LEVEL_VERBOSE, "CDDB request intercepted on socket %d", sock);
+        debug_notify("CD detected! Reading TOC...");
+
         /*
          * 优先读取物理光驱；CFW 未开放 sys_storage 或 ATAPI 读取失败时，
          * 回退到 XMB 自己生成的 CDDB 请求参数。
          */
-        if (load_disc_query_from_drive() == 0 ||
-            parse_cddb_query(request, current_discid,
-                             sizeof(current_discid), current_toc,
-                             sizeof(current_toc)) == 0) {
+        if (load_disc_query_from_drive() == 0) {
+            debug_log(DEBUG_LEVEL_INFO, "TOC read from drive: %s", current_discid);
+            debug_notify("TOC read: %s", current_discid);
             discid_loaded = 1;
             current_cddb_socket = sock;
-            plugin_log("CDDB request intercepted: discid=%s sock=%d",
-                       current_discid, sock);
+        } else if (parse_cddb_query(request, current_discid,
+                                    sizeof(current_discid), current_toc,
+                                    sizeof(current_toc)) == 0) {
+            debug_log(DEBUG_LEVEL_INFO, "TOC parsed from CDDB query: %s", current_discid);
+            debug_notify("TOC from query: %s", current_discid);
+            discid_loaded = 1;
+            current_cddb_socket = sock;
         } else {
-            plugin_log("CDDB request but TOC unavailable (drive read + "
-                       "request parse both failed)");
+            debug_log(DEBUG_LEVEL_ERROR, "Failed to load TOC");
+            debug_notify("CD Info: TOC read FAILED!");
         }
     }
     
@@ -216,31 +302,65 @@ static ssize_t hooked_recv(int sock, void *buf, size_t len, int flags) {
 
     if (ret <= 0) return ret;
     if (sock != current_cddb_socket) return ret;
-    /* 廉价检查放前面，避免对无关数据做全文标记扫描 */
-    if (!discid_loaded || !current_discid[0]) return ret;
     if (!is_cddb_response(buf, ret)) return ret;
     if (!buffer_contains(buf, ret, ".\r\n")) return ret;
 
-    /* 查询gnudb */
+    /* 检查是否已获取disc ID */
+    if (!discid_loaded || !current_discid[0]) {
+        return ret;  /* 没有disc ID，返回原始数据 */
+    }
+
+    /* 查询MusicBrainz */
     CDInfo info;
-    if (gnudb_query(current_discid, current_toc, &info) < 0) {
-        plugin_log("gnudb query failed for discid=%s (kept original response)",
-                   current_discid);
+    if (mb_query(current_discid, current_toc, &info) < 0) {
+        debug_log(DEBUG_LEVEL_ERROR, "MusicBrainz query failed for %s", current_discid);
+        debug_notify("CD Info: MB query failed");
         return ret;
     }
 
-    /* 格式化CDDB响应 */
-    char response[4096];
-    int response_len = format_cddb_response(response, sizeof(response), &info);
-    if (response_len < 0 || response_len > (int)len) {
-        plugin_log("format response failed or too large (len=%d)", response_len);
-        return ret;
+    debug_log(DEBUG_LEVEL_INFO, "MB query success: %s - %s (%d tracks)", 
+              info.artist, info.album, info.track_count);
+    debug_notify("MB: %s - %s", info.artist, info.album);
+
+    /*
+     * 构建AMG二进制响应（XMB原生格式）
+     * 这是simple-cd-info项目的关键发现：XMB期望的是AMG二进制格式，而非CDDB文本。
+     * AMG格式是PS3固件x3_amgsdk模块原生解析的格式。
+     *
+     * 注意：PS3 XMB是单线程的，静态缓冲区是安全的。如果未来需要多线程支持，
+     * 应改为线程本地存储或动态分配。
+     *
+     * 回退策略：
+     * 1. 优先尝试AMG二进制格式（XMB原生）
+     * 2. AMG失败时回退到CDDB文本格式（向后兼容）
+     * 3. 两者都失败时返回原始数据（不破坏功能）
+     */
+    static unsigned char amg_scratch[AMG_MIN_SCRATCH_SIZE];
+    char response[AMG_RECOMMENDED_BUF_SIZE];
+    int response_len = format_amg_response(response, sizeof(response), &info,
+                                           amg_scratch, sizeof(amg_scratch));
+    if (response_len > 0 && response_len <= (int)len) {
+        debug_log(DEBUG_LEVEL_INFO, "AMG response built: %d bytes", response_len);
+        debug_notify("AMG built: %d bytes", response_len);
+    } else {
+        debug_log(DEBUG_LEVEL_VERBOSE, "AMG build failed, trying CDDB");
+        /* AMG格式构建失败，回退到CDDB文本格式 */
+        response_len = format_cddb_response(response, sizeof(response), &info);
+        if (response_len < 0 || response_len > (int)len) {
+            /* CDDB也失败，返回原始数据 */
+            debug_log(DEBUG_LEVEL_ERROR, "Both AMG and CDDB failed");
+            debug_notify("CD Info: Format FAILED!");
+            return ret;
+        }
+        debug_log(DEBUG_LEVEL_INFO, "CDDB fallback used: %d bytes", response_len);
+        debug_notify("CDDB fallback: %d bytes", response_len);
     }
 
+    /* 替换内容并验证 */
     memcpy(buf, response, response_len);
-
-    plugin_log("replaced CDDB response: %s - %s (%d tracks)",
-               info.artist, info.album, info.track_count);
+    if (memcmp(buf, response, response_len) != 0) {
+        return ret;
+    }
 
     discid_loaded = 0;
     current_cddb_socket = -1;
@@ -363,7 +483,6 @@ int hook_net_init(void) {
         resolve_net_export(netSend_stub, &original_send_entry, &send_toc) < 0) {
         original_recv_entry = NULL;
         original_send_entry = NULL;
-        plugin_log("ERROR: failed to resolve sys_net recv/send export");
         return -1;
     }
     if ((hooked_recv_descriptor->entry >> 32) != 0 ||
@@ -372,7 +491,6 @@ int hook_net_init(void) {
         (hooked_send_descriptor->toc >> 32) != 0) {
         original_recv_entry = NULL;
         original_send_entry = NULL;
-        plugin_log("ERROR: hook descriptor address exceeds 32-bit");
         return -1;
     }
 
@@ -395,7 +513,6 @@ int hook_net_init(void) {
                              sizeof(recv_trampoline_code)) < 0) {
         original_recv_entry = NULL;
         original_send_entry = NULL;
-        plugin_log("ERROR: PS3MAPI write failed (recv trampoline)");
         return -1;
     }
     recv_trampoline_descriptor.entry = (uint64_t)recv_trampoline;
@@ -410,7 +527,6 @@ int hook_net_init(void) {
                              sizeof(recv_hook_jump)) < 0) {
         original_recv_entry = NULL;
         original_send_entry = NULL;
-        plugin_log("ERROR: PS3MAPI write failed (recv prologue)");
         return -1;
     }
 
@@ -432,7 +548,6 @@ int hook_net_init(void) {
                              sizeof(recv_original_instructions));
         original_recv_entry = NULL;
         original_send_entry = NULL;
-        plugin_log("ERROR: PS3MAPI write failed (send trampoline)");
         return -1;
     }
     send_trampoline_descriptor.entry = (uint64_t)send_trampoline;
@@ -449,12 +564,9 @@ int hook_net_init(void) {
                              sizeof(recv_original_instructions));
         original_recv_entry = NULL;
         original_send_entry = NULL;
-        plugin_log("ERROR: PS3MAPI write failed (send prologue)");
         return -1;
     }
 
-    plugin_log("network hook installed (recv=%p send=%p)",
-               original_recv_entry, original_send_entry);
     return 0;
 }
 

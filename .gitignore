@@ -1,5 +1,6 @@
 # macOS
 .DS_Store
+**/.DS_Store
 
 # 构建产物
 build/
@@ -8,11 +9,11 @@ build/
 *.elf
 *.sprx
 
-# 主机侧测试可执行文件
+# 测试目录与主机侧测试可执行文件（不纳入版本控制）
+tests/
 test_formatter
 test_hook_logic
 test_json
-tests/test_struct_size
 
 # 编辑器
 .vscode/

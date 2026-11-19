@@ -7,7 +7,7 @@
 #------------------------------------------------------------------------------
 PREFIX      := /usr/local/ps3dev/ppu
 CC          := $(PREFIX)/bin/ppu-gcc
-STRIP       := $(PREFIX)/bin/ppu-objcopy
+STRIP       := $(PREFIX)/bin/ppu-strip
 FSELF       := fself
 SPRXLINKER  := sprxlinker
 PRX_CRT     := $(PREFIX)/powerpc64-ps3-elf/lib/lv2-sprx.o
@@ -22,8 +22,7 @@ CFLAGS  += -I$(PREFIX)/include
 LDFLAGS := -L$(PREFIX)/lib
 LDFLAGS += -nostartfiles
 LDFLAGS += -Wl,-e,_ps3_cd_info_start
-# gnudb 为纯 HTTP 查询，不再链接 SSL/HTTPS
-LDFLAGS += -lhttp -lhttputil -lnet -lsysfs -lsysmodule -llv2
+LDFLAGS += -lhttp -lhttputil -lssl -lnet -lsysfs -lsysmodule -llv2
 
 #------------------------------------------------------------------------------
 # 源文件和目标
@@ -34,11 +33,11 @@ BUILD_DIR   := build
 
 SOURCES     := $(SRC_DIR)/main.c \
                $(SRC_DIR)/hook_net.c \
-               $(SRC_DIR)/cddb_query.c \
                $(SRC_DIR)/toc_reader.c \
-               $(SRC_DIR)/gnudb.c \
-               $(SRC_DIR)/gnudb_parse.c \
-               $(SRC_DIR)/formatter.c
+               $(SRC_DIR)/musicbrainz.c \
+               $(SRC_DIR)/formatter.c \
+               $(SRC_DIR)/amg_response.c \
+               $(SRC_DIR)/debug.c
 
 OBJECTS     := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SOURCES))
 DEPENDS     := $(OBJECTS:.o=.d)
@@ -66,13 +65,11 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # 链接.o -> .elf
-# 去调试信息用 ppu-objcopy 写临时文件再替换：部分 macOS 环境下
-# ppu-strip 的原地 rename 会被拒绝（EPERM），objcopy 直写不受影响。
 $(TARGET_ELF): $(OBJECTS)
 	@echo "  LD      $@"
 	@$(CC) $(CFLAGS) $(PRX_CRT) $(OBJECTS) $(LDFLAGS) -o $@
 	@echo "  STRIP   $@"
-	@$(STRIP) --strip-debug $@ $@.tmp && mv $@.tmp $@
+	@$(STRIP) --strip-debug $@
 	@echo "  PRX     $@"
 	@$(SPRXLINKER) $@
 	@echo "  SIZE    $@"
@@ -84,29 +81,6 @@ $(TARGET_SPRX): $(TARGET_ELF)
 	@$(FSELF) $(TARGET_ELF) $@
 	@echo "  DONE    $@"
 	@ls -lh $@
-
-#------------------------------------------------------------------------------
-# 主机侧单元测试（无需 PS3 工具链，cc/clang 即可）
-#------------------------------------------------------------------------------
-HOST_CC     ?= cc
-HOST_CFLAGS := -std=c99 -O1 -Wall -Wextra -I./include
-
-.PHONY: test
-test:
-	@mkdir -p $(BUILD_DIR)
-	@echo "  HOST-CC tests"
-	$(HOST_CC) $(HOST_CFLAGS) tests/test_formatter.c   $(SRC_DIR)/formatter.c  -o $(BUILD_DIR)/test_formatter
-	$(HOST_CC) $(HOST_CFLAGS) tests/test_gnudb_parse.c $(SRC_DIR)/gnudb_parse.c -o $(BUILD_DIR)/test_gnudb_parse
-	$(HOST_CC) $(HOST_CFLAGS) tests/test_hook_logic.c                          -o $(BUILD_DIR)/test_hook_logic
-	$(HOST_CC) $(HOST_CFLAGS) tests/test_cddb_query.c  $(SRC_DIR)/cddb_query.c -o $(BUILD_DIR)/test_cddb_query
-	$(HOST_CC) $(HOST_CFLAGS) tests/test_struct_size.c                         -o $(BUILD_DIR)/test_struct_size
-	@echo "  HOST-RUN tests"
-	@$(BUILD_DIR)/test_formatter
-	@$(BUILD_DIR)/test_gnudb_parse
-	@$(BUILD_DIR)/test_hook_logic
-	@$(BUILD_DIR)/test_cddb_query
-	@$(BUILD_DIR)/test_struct_size
-	@echo "  ALL TESTS PASSED"
 
 #------------------------------------------------------------------------------
 # 清理

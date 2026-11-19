@@ -1,12 +1,12 @@
 #include <stdio.h>
 #include <string.h>
-#include <stdarg.h>
 #include <sys/prx.h>
 #include <lv2/sysfs.h>
 #include <ppu-types.h>
 #include "hook_net.h"
-#include "gnudb.h"
-#include "log.h"
+#include "musicbrainz.h"
+#include "amg_response.h"
+#include "debug.h"
 
 /* ------------------------------------------------------------------ */
 /* PRX入口函数声明                                                       */
@@ -19,35 +19,16 @@ s32 _ps3_cd_info_stop(size_t args, void *argp);
 /* 日志函数                                                              */
 /* ------------------------------------------------------------------ */
 
-static int log_dir_ok = 0;
-
-/*
- * 轻量日志：printf 风格，逐条 open/write/close 追加到日志文件。
- * 目录 /dev_hdd0/tmp 可能不存在，首次写入前用 sysFsMkdir 确保。
- */
-void plugin_log(const char *fmt, ...) {
+static void plugin_log(const char *msg) {
     s32 fd;
     u64 written;
-    char buf[512];
-    va_list ap;
-    int n;
-
-    if (!log_dir_ok) {
-        sysFsMkdir("/dev_hdd0/tmp", 0777);
-        log_dir_ok = 1;
-    }
-
-    va_start(ap, fmt);
-    n = vsnprintf(buf, sizeof(buf) - 1, fmt, ap);
-    va_end(ap);
-    if (n < 0) return;
-    if ((size_t)n >= sizeof(buf) - 1) n = sizeof(buf) - 1;
-    buf[n++] = '\n';
-
+    
+    /* 使用正确的函数名：sysFsOpen, sysFsWrite, sysFsClose */
     if (sysFsOpen("/dev_hdd0/tmp/cd_plugin.log",
                   SYS_O_WRONLY | SYS_O_CREAT | SYS_O_APPEND,
                   &fd, NULL, 0) == 0) {
-        sysFsWrite(fd, buf, (u64)n, &written);
+        sysFsWrite(fd, msg, strlen(msg), &written);
+        sysFsWrite(fd, "\n", 1, &written);
         sysFsClose(fd);
     }
 }
@@ -62,16 +43,25 @@ s32 _ps3_cd_info_start(size_t args, void *argp) {
 
     plugin_log("PS3 CD Info Plugin starting...");
 
+    /* 初始化调试系统（默认INFO级别） */
+    debug_init(DEBUG_LEVEL_INFO);
+    debug_notify("CD Info Plugin: Starting...");
+
     /* 初始化缓存 */
-    gnudb_cache_init();
+    mb_cache_init();
     plugin_log("Cache initialized");
+    debug_log(DEBUG_LEVEL_VERBOSE, "Cache initialized");
 
     /* 安装网络hook */
     if (hook_net_init() < 0) {
         plugin_log("ERROR: Failed to install network hook");
+        debug_notify("CD Info Plugin: Hook FAILED!");
+        debug_log(DEBUG_LEVEL_ERROR, "Failed to install network hook");
         return SYS_PRX_STOP_OK;
     }
     plugin_log("Network hook installed");
+    debug_notify("CD Info Plugin: Ready!");
+    debug_log(DEBUG_LEVEL_INFO, "Network hook installed successfully");
 
     plugin_log("Plugin started successfully");
 
