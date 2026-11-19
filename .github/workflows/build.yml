@@ -54,18 +54,26 @@ jobs:
       # 使用 -B 强制全新构建，避免缓存污染；makefile 的 PREFIX 默认即 /usr/local/ps3dev。
       - name: Build
         run: |
-          set -uo pipefail
+          set +e
+          set -o pipefail
           export PATH="$PS3DEV/bin:$PS3DEV/ppu/bin:$PATH"
           make -B 2>&1 | tee /tmp/build.log
-          exit "${PIPESTATUS[0]}"
-
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: /tmp/build.log
-          if-no-files-found: ignore
+          rc=$?
+          # 无论成败都把日志尾部写入 step summary，便于从网页/API 读取
+          {
+            echo "### Build log (tail)"
+            echo '```'
+            tail -n 80 /tmp/build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then
+            tail -n 25 /tmp/build.log | while IFS= read -r line; do
+              line="${line//'%'/'%25'}"
+              line="${line//$'\r'/'%0D'}"
+              [ -n "$line" ] && echo "::error::$line"
+            done
+          fi
+          exit "$rc"
 
       - name: Verify artifacts
         run: |
