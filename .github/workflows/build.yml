@@ -1,0 +1,81 @@
+name: Build SPRX
+
+# 当推送到 main、发起 PR 或手动触发时，自动交叉编译 PS3 SPRX 插件。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      PS3DEV: /usr/local/ps3dev
+      # bucanero/ps3toolchain 官方预编译包：完整 PPU/SPU 工具链 + PSL1GHT 库 + fself/sprxlinker
+      TOOLCHAIN_URL: https://github.com/bucanero/ps3toolchain/releases/download/ubuntu-latest-fad3b5fb/ps3dev-ubuntu-latest-2020-08-31.tar.gz
+      TOOLCHAIN_KEY: ps3dev-ubuntu-2020-08-31-v1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 工具链约 500MB，用缓存避免每次重新下载解压。
+      - name: Cache PS3 toolchain
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PS3DEV }}
+          key: ${{ env.TOOLCHAIN_KEY }}
+
+      - name: Install PS3DEV toolchain
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 -o /tmp/ps3dev.tar.gz "$TOOLCHAIN_URL"
+          # 归档内的顶层目录为 ps3dev/，解压到 /usr/local 后即 /usr/local/ps3dev
+          sudo tar -xzf /tmp/ps3dev.tar.gz -C /usr/local
+          rm -f /tmp/ps3dev.tar.gz
+
+      - name: Verify toolchain
+        run: |
+          set -euo pipefail
+          export PATH="$PS3DEV/bin:$PS3DEV/ppu/bin:$PATH"
+          command -v ppu-gcc
+          command -v ppu-strip
+          command -v fself
+          command -v sprxlinker
+          test -f "$PS3DEV/ppu/powerpc64-ps3-elf/lib/lv2-sprx.o"
+
+      # 使用 -B 强制全新构建，避免缓存污染；makefile 的 PREFIX 默认即 /usr/local/ps3dev。
+      - name: Build
+        run: |
+          set -euo pipefail
+          export PATH="$PS3DEV/bin:$PS3DEV/ppu/bin:$PATH"
+          make -B
+
+      - name: Verify artifacts
+        run: |
+          set -euo pipefail
+          test -s ps3_cd_info_plugin.elf
+          test -s ps3_cd_info_plugin.sprx
+          # SPRX 头应为 "SCE\0"
+          magic="$(od -An -tx1 -N4 ps3_cd_info_plugin.sprx | tr -d ' \n')"
+          echo "SPRX magic: $magic"
+          test "$magic" = "53434500"
+          export PATH="$PS3DEV/ppu/bin:$PATH"
+          ppu-readelf -h ps3_cd_info_plugin.elf | grep -q 'PowerPC64'
+          ppu-readelf -S ps3_cd_info_plugin.elf | grep -q '\.sys_proc_prx_param'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps3_cd_info_plugin
+          path: |
+            ps3_cd_info_plugin.sprx
+            ps3_cd_info_plugin.elf
+          if-no-files-found: error
