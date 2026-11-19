@@ -72,7 +72,8 @@ jobs:
           test "$magic" = "53434500"
           export PATH="$PS3DEV/ppu/bin:$PATH"
           ppu-readelf -h ps3_cd_info_plugin.elf | grep -q 'PowerPC64'
-          ppu-readelf -S ps3_cd_info_plugin.elf | grep -q '\.sys_proc_prx_param'
+          # readelf 将段名截断为 16 字符，显示为 .sys_proc_prx_par
+          ppu-readelf -S ps3_cd_info_plugin.elf | grep -q 'sys_proc_prx'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
